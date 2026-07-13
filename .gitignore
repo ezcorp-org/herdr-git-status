@@ -1,0 +1,4 @@
+/target
+*.log
+# local task-tracking scratch (not part of the plugin)
+/tasks

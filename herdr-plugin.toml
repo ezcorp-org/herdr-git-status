@@ -1,0 +1,62 @@
+# herdr plugin: Git Status (working-tree status per space)
+#
+# Shows each space's (workspace's) git working-tree status — staged / modified /
+# untracked / conflict counts — grouped under the branch name. herdr plugin v1
+# has no API to draw into the sidebar, so the data is surfaced two ways:
+#   - a background updater that pushes the status into the sidebar / agents panel
+#   - a live terminal pane and one-shot actions (dashboard / report / json)
+#
+# Install:     herdr plugin install ezcorp-org/herdr-git-status
+# Local dev:   herdr plugin link /path/to/herdr-git-status   (references the dir in place)
+# Remove:      herdr plugin unlink ez-corp.git-status
+# Logs:        herdr plugin log list --plugin ez-corp.git-status
+
+id = "ez-corp.git-status"
+name = "Git Status"
+version = "1.2.0"
+min_herdr_version = "0.7.0"
+description = "Git working-tree status (staged/modified/untracked, ✓ when clean) per space."
+platforms = ["linux", "macos"]
+
+# Commands are argv arrays (no shell) and run with the plugin dir as cwd,
+# per https://herdr.dev/docs/plugins/#trust-and-security
+
+# Compiled at install time: herdr runs this once with the plugin root as cwd.
+# The resulting ./target/release/git-status rides into HERDR_PLUGIN_ROOT and is
+# what every pane/action command below invokes (relative to the plugin root).
+[[build]]
+command = ["cargo", "build", "--release"]
+
+# Live, self-refreshing dashboard. Opened as a temporary zoomed overlay pane.
+[[panes]]
+id = "dashboard"
+title = "Git status"
+placement = "overlay"
+command = ["./target/release/git-status", "--interval", "3"]
+
+# One-shot snapshot printed to stdout / plugin log.
+[[actions]]
+id = "report"
+title = "Git status report"
+contexts = ["workspace"]
+command = ["./target/release/git-status", "--once"]
+
+# Status updater: a background daemon that surfaces each space's git status as
+# a "git" pseudo-agent row in the agents panel (default mode, stock herdr), or
+# as display-only metadata on a spare shell pane that a patched herdr renders in
+# the spaces card (sidebar mode — see the README). Statuses carry a TTL, so they
+# self-clear if the daemon dies.
+[[actions]]
+id = "status-toggle"
+title = "Toggle git status updater"
+command = ["./target/release/git-status", "--toggle"]
+
+[[actions]]
+id = "status-enable"
+title = "Enable git status updater"
+command = ["./target/release/git-status", "--enable"]
+
+[[actions]]
+id = "status-disable"
+title = "Disable git status updater"
+command = ["./target/release/git-status", "--disable"]

@@ -1,0 +1,22 @@
+[package]
+name = "git-status"
+version = "1.2.0"
+edition = "2021"
+description = "Per-space git working-tree status in the herdr sidebar (agents panel on stock herdr; spaces card on patched builds)."
+license = "MIT"
+
+# Binary target inherits the package name => target/release/git-status,
+# which is what herdr-plugin.toml's commands point at.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+signal-hook = "0.3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
