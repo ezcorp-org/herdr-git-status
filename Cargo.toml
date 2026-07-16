@@ -1,6 +1,6 @@
 [package]
 name = "git-status"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 description = "Per-space git working-tree status in the herdr sidebar (agents panel on stock herdr; spaces card on patched builds)."
 license = "MIT"

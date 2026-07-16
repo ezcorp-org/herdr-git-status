@@ -207,8 +207,13 @@ fn space_status(sp: &Space, config: &Config) -> String {
 /// tree when `clean_checkmark = false` — has its row withdrawn: in sidebar mode
 /// any status we previously set is cleared; in agents-panel mode the
 /// pseudo-agent is released. Everything else reports its status — the dirty
-/// token, or `✓` for a fully clean repo — as a "git" pseudo-agent (agents-panel
-/// mode) or as TTL'd metadata on the first spare/agent pane.
+/// token, or `✓` for a fully clean repo.
+///
+/// The two modes are strictly separate about WHERE they write: agents-panel mode
+/// only ever claims a spare pane as a "git" pseudo-agent and never writes
+/// spaces-card metadata (a space with no spare pane simply shows nothing, so it
+/// can't collide with a status-row plugin like space-usage); sidebar mode writes
+/// TTL'd metadata on the first spare (else agent) pane.
 pub fn push_statuses(client: &mut Herdr, spaces: &[Space], config: &Config, tracked: &mut Tracked) {
     let source = config::plugin_id();
     let ttl_ms = config.interval_seconds * 1000 * 3;
@@ -221,28 +226,32 @@ pub fn push_statuses(client: &mut Herdr, spaces: &[Space], config: &Config, trac
             for extra in sp.pseudo_panes.iter().skip(1) {
                 release_pseudo(client, extra, &source, tracked);
             }
-            let pane = sp.pseudo_panes.first().or_else(|| sp.spare_panes.first());
-            if let Some(pane) = pane {
+            // agents-panel mode ONLY claims a spare pane as a "git" pseudo-agent;
+            // it must NEVER write spaces-card metadata. A space with no spare
+            // (agent-only) pane therefore surfaces nothing here — otherwise the
+            // fallback would write onto an agent pane and fight the space-usage
+            // plugin for the single status row, and the two would flip-flop every
+            // refresh. So this branch always ends the iteration; the metadata
+            // block below is sidebar-mode only.
+            if let Some(pane) = sp.pseudo_panes.first().or_else(|| sp.spare_panes.first()) {
                 if status.is_empty() {
                     release_pseudo(client, pane, &source, tracked); // clean → no entry
-                    continue;
-                }
-                if client
+                } else if client
                     .report_agent(pane, &source, PSEUDO_AGENT, "idle", &status)
                     .is_ok()
                 {
                     tracked.pseudo.insert(pane.clone());
-                    continue; // dedicated panel entry covers this space
                 }
-                // pane just closed — fall through to metadata
-            } else if status.is_empty() {
-                continue;
+                // A report_agent failure means the pane just closed; do nothing
+                // this cycle (the next refresh re-evaluates) rather than falling
+                // back to metadata on an agent pane.
             }
-        } else {
-            // sidebar mode: release pseudo-agents left over from agents-panel mode.
-            for pane_id in &sp.pseudo_panes {
-                release_pseudo(client, pane_id, &source, tracked);
-            }
+            continue;
+        }
+
+        // sidebar mode: release pseudo-agents left over from agents-panel mode.
+        for pane_id in &sp.pseudo_panes {
+            release_pseudo(client, pane_id, &source, tracked);
         }
 
         let target = sp.spare_panes.first().or_else(|| sp.agent_panes.first());
