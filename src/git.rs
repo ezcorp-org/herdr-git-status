@@ -46,6 +46,33 @@ pub fn status(cwd: Option<&str>) -> GitStatus {
 /// The mark for a fully clean repo — nothing to commit, push, or pull.
 pub const CLEAN_MARK: &str = "✓";
 
+/// Severity bucket of a working tree, driving the colour of BOTH the terminal
+/// dashboard cell ([`crate::render`]) and the sidebar status token
+/// ([`crate::daemon`]): an unmerged conflict is the most severe, then any other
+/// working-tree change, then a fully clean (or non-repo) tree. Keeping this
+/// classification in one place means the dashboard and the pushed token can
+/// never disagree about what colour a state deserves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Fully clean tree (the `✓` state) — or a non-repo, which surfaces nothing.
+    Clean,
+    /// Staged / modified / untracked changes, no conflicts.
+    Dirty,
+    /// At least one unmerged (conflicted) path.
+    Conflict,
+}
+
+/// Classify `g` into its [`Severity`] bucket; conflicts win over other changes.
+pub fn severity(g: &GitStatus) -> Severity {
+    if g.conflicts > 0 {
+        Severity::Conflict
+    } else if !g.is_clean() {
+        Severity::Dirty
+    } else {
+        Severity::Clean
+    }
+}
+
 /// The status string the updater surfaces for a space: [`token`] for a dirty
 /// tree, [`CLEAN_MARK`] for a fully clean repo, and `""` otherwise (non-repo, or
 /// clean-but-diverged — the ahead/behind arrows are herdr's branch row's job).
@@ -370,6 +397,36 @@ mod tests {
         };
         assert_eq!(status_token(&g), token(&g));
         assert_eq!(status_token(&g), "+2 ?1");
+    }
+
+    // ---- severity classification ---------------------------------------------
+
+    #[test]
+    fn severity_buckets_by_worst_change() {
+        let repo = GitStatus {
+            is_repo: true,
+            ..GitStatus::default()
+        };
+        // Fully clean (and non-repo) → Clean.
+        assert_eq!(severity(&repo), Severity::Clean);
+        assert_eq!(severity(&GitStatus::default()), Severity::Clean);
+        // Any working-tree change with no conflict → Dirty.
+        assert_eq!(
+            severity(&GitStatus {
+                modified: 1,
+                ..repo.clone()
+            }),
+            Severity::Dirty
+        );
+        // A conflict outranks other changes → Conflict.
+        assert_eq!(
+            severity(&GitStatus {
+                staged: 3,
+                conflicts: 1,
+                ..repo
+            }),
+            Severity::Conflict
+        );
     }
 
     #[test]

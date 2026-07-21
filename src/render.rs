@@ -55,15 +55,13 @@ impl Style {
         self.paint("31", s)
     }
 
-    /// Colour a status cell by severity: conflicts red, other changes yellow,
-    /// clean green.
+    /// Colour a status cell by [`git::severity`]: conflicts red, other changes
+    /// yellow, clean green — the same buckets the sidebar tokens use.
     fn status(&self, g: &GitStatus, s: &str) -> String {
-        if g.conflicts > 0 {
-            self.red(s)
-        } else if !g.is_clean() {
-            self.yellow(s)
-        } else {
-            self.green(s)
+        match git::severity(g) {
+            git::Severity::Conflict => self.red(s),
+            git::Severity::Dirty => self.yellow(s),
+            git::Severity::Clean => self.green(s),
         }
     }
 }

@@ -9,7 +9,7 @@
 //! any previous status actively cleared so no stale row lingers. `enable` /
 //! `disable` / `toggle` spawn or signal that daemon and sweep leftover statuses.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,16 +26,42 @@ use crate::git;
 use crate::herdr::{self, Herdr};
 use crate::model::Space;
 
-/// Panes we have pushed status onto this run, so shutdown can clear them.
+/// Named metadata tokens the updater pushes, one per [`git::Severity`], so herdr
+/// can colour each independently via its per-token sidebar style — green clean,
+/// yellow dirty, red conflict. herdr renders a custom token's value as flat text
+/// (no ANSI, no content-based colour), so severity has to live in the token
+/// *name*: exactly one is set per space at a time and the other two are cleared.
+/// Reference them in herdr's `config.toml` as `$git_clean` / `$git_dirty` /
+/// `$git_conflict`.
+pub const TOKEN_CLEAN: &str = "git_clean";
+pub const TOKEN_DIRTY: &str = "git_dirty";
+pub const TOKEN_CONFLICT: &str = "git_conflict";
+/// Every status token name, for clearing the inactive ones (and sweeping on
+/// shutdown/disable without needing to know which was active).
+pub const STATUS_TOKENS: [&str; 3] = [TOKEN_CLEAN, TOKEN_DIRTY, TOKEN_CONFLICT];
+
+/// The status token a non-empty status for `g` is pushed onto, chosen by
+/// [`git::severity`] so the colour matches the terminal dashboard's cell.
+fn status_token_name(g: &crate::model::GitStatus) -> &'static str {
+    match git::severity(g) {
+        git::Severity::Conflict => TOKEN_CONFLICT,
+        git::Severity::Dirty => TOKEN_DIRTY,
+        git::Severity::Clean => TOKEN_CLEAN,
+    }
+}
+
+/// Panes/workspaces we have pushed status onto this run, so shutdown can clear
+/// them. The stored value is the currently-set status token, so a severity flip
+/// (e.g. dirty → conflict) clears the previous token before setting the new one.
 #[derive(Debug, Default)]
 pub struct Tracked {
     /// Panes carrying our pseudo-agent (released, not TTL'd).
     pub pseudo: HashSet<String>,
-    /// Panes carrying TTL'd pane-level metadata tokens (agents-panel mode).
-    pub metadata: HashSet<String>,
-    /// Workspaces carrying TTL'd workspace-level metadata tokens (sidebar mode →
-    /// the spaces card, which renders workspace tokens rather than pane tokens).
-    pub workspaces: HashSet<String>,
+    /// Pane id → its active TTL'd status token (agents-panel mode).
+    pub metadata: HashMap<String, &'static str>,
+    /// Workspace id → its active TTL'd status token (sidebar mode → the spaces
+    /// card, which renders workspace tokens rather than pane tokens).
+    pub workspaces: HashMap<String, &'static str>,
 }
 
 /// PID of a live updater daemon, or `None` (missing pid file / dead process).
@@ -172,9 +198,13 @@ pub fn disable_updater() -> crate::Result<()> {
             let mut sweep = Tracked::default();
             for sp in &spaces {
                 sweep.pseudo.extend(sp.pseudo_panes.iter().cloned());
-                sweep.metadata.extend(sp.agent_panes.iter().cloned());
-                sweep.metadata.extend(sp.spare_panes.iter().cloned());
-                sweep.workspaces.insert(sp.id.clone());
+                // The stored token is a don't-care here: clear_all sweeps every
+                // STATUS_TOKENS name per id, so a dead daemon's stale token of
+                // any severity is cleared regardless of which we record.
+                for pane in sp.agent_panes.iter().chain(&sp.spare_panes) {
+                    sweep.metadata.insert(pane.clone(), TOKEN_DIRTY);
+                }
+                sweep.workspaces.insert(sp.id.clone(), TOKEN_DIRTY);
             }
             clear_all(&mut client, &sweep);
         }
@@ -240,8 +270,8 @@ pub fn push_statuses(client: &mut Herdr, spaces: &[Space], config: &Config, trac
             if let Some(pane) = sp.pseudo_panes.first().or_else(|| sp.spare_panes.first()) {
                 if status.is_empty() {
                     release_pseudo(client, pane, &source, tracked); // clean → no entry
-                    if tracked.metadata.remove(pane) {
-                        let _ = client.clear_metadata_status(pane, &source, PSEUDO_AGENT);
+                    if let Some(prev) = tracked.metadata.remove(pane) {
+                        let _ = client.clear_metadata_status(pane, &source, prev);
                     }
                 } else if client
                     .report_agent(pane, &source, PSEUDO_AGENT, "idle")
@@ -249,14 +279,17 @@ pub fn push_statuses(client: &mut Herdr, spaces: &[Space], config: &Config, trac
                 {
                     tracked.pseudo.insert(pane.clone());
                     // 0.7.5: report_agent only claims the entry; the status text
-                    // rides a named `git` token (rendered by a `$git` row). Named
-                    // tokens are independent, so this no longer collides with the
-                    // space-usage plugin's `usage` token.
+                    // rides a severity-named token (`$git_clean` / `$git_dirty` /
+                    // `$git_conflict`) so herdr can colour it. Named tokens are
+                    // independent, so this never collides with the space-usage
+                    // plugin's `usage` token.
+                    let token = status_token_name(&sp.git);
+                    clear_stale_pane_token(client, pane, &source, token, tracked);
                     if client
-                        .report_metadata_status(pane, &source, PSEUDO_AGENT, &status, ttl_ms)
+                        .report_metadata_status(pane, &source, token, &status, ttl_ms)
                         .is_ok()
                     {
-                        tracked.metadata.insert(pane.clone());
+                        tracked.metadata.insert(pane.clone(), token);
                     }
                 }
                 // A report_agent failure means the pane just closed; do nothing
@@ -272,33 +305,77 @@ pub fn push_statuses(client: &mut Herdr, spaces: &[Space], config: &Config, trac
         }
 
         // 0.7.5: the spaces card renders WORKSPACE tokens (`[ui.sidebar.spaces]`
-        // `$git`), not pane tokens — so report at the workspace level.
+        // `$git_clean` / `$git_dirty` / `$git_conflict`), not pane tokens — so
+        // report at the workspace level.
         if status.is_empty() {
             // clean → clear a token we previously set (idempotent; skip if we
             // never set one, so always-clean spaces cost no extra calls).
-            if tracked.workspaces.remove(&sp.id) {
-                let _ = client.workspace_clear_metadata(&sp.id, &source, PSEUDO_AGENT);
+            if let Some(prev) = tracked.workspaces.remove(&sp.id) {
+                let _ = client.workspace_clear_metadata(&sp.id, &source, prev);
             }
-        } else if client
-            .workspace_report_metadata(&sp.id, &source, PSEUDO_AGENT, &status, ttl_ms)
-            .is_ok()
-        {
-            tracked.workspaces.insert(sp.id.clone());
+        } else {
+            let token = status_token_name(&sp.git);
+            clear_stale_workspace_token(client, &sp.id, &source, token, tracked);
+            if client
+                .workspace_report_metadata(&sp.id, &source, token, &status, ttl_ms)
+                .is_ok()
+            {
+                tracked.workspaces.insert(sp.id.clone(), token);
+            }
         }
     }
 }
 
-/// Release every pseudo-agent and clear every metadata status in `tracked`.
+/// Release every pseudo-agent and clear every status token in `tracked`.
+///
+/// Each tracked pane/workspace gets ALL [`STATUS_TOKENS`] cleared, not just the
+/// one recorded as active — cheap, idempotent, and robust to a severity that
+/// flipped right before shutdown or a stale token left by a crashed prior run.
 pub fn clear_all(client: &mut Herdr, tracked: &Tracked) {
     let source = config::plugin_id();
     for pane_id in &tracked.pseudo {
         let _ = client.release_agent(pane_id, &source, PSEUDO_AGENT);
     }
-    for pane_id in &tracked.metadata {
-        let _ = client.clear_metadata_status(pane_id, &source, PSEUDO_AGENT);
+    for pane_id in tracked.metadata.keys() {
+        for token in STATUS_TOKENS {
+            let _ = client.clear_metadata_status(pane_id, &source, token);
+        }
     }
-    for workspace_id in &tracked.workspaces {
-        let _ = client.workspace_clear_metadata(workspace_id, &source, PSEUDO_AGENT);
+    for workspace_id in tracked.workspaces.keys() {
+        for token in STATUS_TOKENS {
+            let _ = client.workspace_clear_metadata(workspace_id, &source, token);
+        }
+    }
+}
+
+/// Clear a pane's previously-set status token when this cycle's severity picks a
+/// different one, so a dirty → conflict flip never leaves two tokens lit.
+fn clear_stale_pane_token(
+    client: &mut Herdr,
+    pane: &str,
+    source: &str,
+    token: &str,
+    tracked: &mut Tracked,
+) {
+    if let Some(prev) = tracked.metadata.get(pane).copied() {
+        if prev != token {
+            let _ = client.clear_metadata_status(pane, source, prev);
+        }
+    }
+}
+
+/// Workspace-level counterpart of [`clear_stale_pane_token`] (sidebar mode).
+fn clear_stale_workspace_token(
+    client: &mut Herdr,
+    workspace_id: &str,
+    source: &str,
+    token: &str,
+    tracked: &mut Tracked,
+) {
+    if let Some(prev) = tracked.workspaces.get(workspace_id).copied() {
+        if prev != token {
+            let _ = client.workspace_clear_metadata(workspace_id, source, prev);
+        }
     }
 }
 
@@ -377,6 +454,32 @@ mod tests {
     fn dirty_space_produces_a_token() {
         let sp = dirty_space("repo", &["pane-1"]);
         assert_eq!(space_status(&sp, &Config::default()), "~2");
+    }
+
+    #[test]
+    fn status_token_name_maps_severity_to_a_coloured_token() {
+        // Fully clean (the ✓) → the green clean token.
+        let clean = fully_clean_space("repo");
+        assert_eq!(status_token_name(&clean.git), TOKEN_CLEAN);
+        // Dirty, no conflicts → the yellow dirty token.
+        let dirty = dirty_space("repo", &[]);
+        assert_eq!(status_token_name(&dirty.git), TOKEN_DIRTY);
+        // A conflict → the red conflict token, outranking other changes.
+        let conflict = Space {
+            git: GitStatus {
+                is_repo: true,
+                staged: 1,
+                conflicts: 2,
+                ..GitStatus::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(status_token_name(&conflict.git), TOKEN_CONFLICT);
+    }
+
+    #[test]
+    fn status_tokens_are_the_three_severity_names() {
+        assert_eq!(STATUS_TOKENS, [TOKEN_CLEAN, TOKEN_DIRTY, TOKEN_CONFLICT]);
     }
 
     #[test]

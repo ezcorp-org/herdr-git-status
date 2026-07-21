@@ -102,23 +102,48 @@ Switching modes cleans up after the other mode automatically.
 ### herdr 0.7.5+ (native sidebar tokens — no patch needed)
 
 Since herdr **0.7.5** the sidebar is drawn from configurable **token rows**, so
-sidebar mode no longer needs a patched build. This plugin pushes a named
-**`git`** metadata token (`pane.report_metadata`, replacing the old
-`custom_status`), and you reference it as **`$git`** in herdr's own
-`config.toml`:
+sidebar mode no longer needs a patched build. This plugin pushes named metadata
+tokens (`pane.report_metadata` / `workspace.report_metadata`, replacing the old
+`custom_status`), which you reference as **`$…`** rows in herdr's own
+`config.toml`.
+
+herdr renders a custom token's value as **flat text** — it can't colour it by
+content. So the plugin encodes severity in the token **name**, filling exactly
+one per space and clearing the others: **`$git_clean`** (`✓`), **`$git_dirty`**
+(`+2 ~1 ?3`), or **`$git_conflict`** (`!N`). Give each a `fg` to restore the
+green / yellow / red colour-coding (only the active one ever renders; the rest
+elide):
 
 ```toml
 [ui.sidebar.spaces]          # sidebar mode → git status under each space
-rows = [["state_icon", "workspace"], ["branch", "git_status", "$git"]]
+rows = [
+  ["state_icon", "workspace"],
+  ["branch", "git_status",
+    { token = "$git_clean",    fg = "#a6e3a1" },   # fully clean ✓ — green
+    { token = "$git_dirty",    fg = "#f9e2af" },   # +staged ~modified ?untracked — yellow
+    { token = "$git_conflict", fg = "#f38ba8" }],  # !conflicts — red
+]
 
 [ui.sidebar.agents]          # agents-panel mode → git status on the agent row
-rows = [["state_icon", "workspace", "tab"], ["agent", "$git"]]
+rows = [
+  ["state_icon", "workspace", "tab"],
+  ["agent",
+    { token = "$git_clean",    fg = "#a6e3a1" },
+    { token = "$git_dirty",    fg = "#f9e2af" },
+    { token = "$git_conflict", fg = "#f38ba8" }],
+]
 ```
 
-Because tokens are **named**, this no longer collides with the
+After editing herdr's `config.toml`, apply it to the running server with
+**`herdr server reload-config`** (sidebar token rows reload live — no restart).
+Until you do, herdr keeps rendering the old rows: if they still reference a token
+name the plugin no longer pushes (e.g. a bare `$git`), the git status silently
+shows **nothing**.
+
+Drop `fg` for a single flat colour, or drop a token name to hide that severity.
+Because tokens are **named**, they never collide with the
 [space-usage](https://github.com/ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay)
-plugin's `$usage` token — both can render at once (e.g. `$usage` in the spaces
-card, `$git` in the agents panel, or both in either). Built-in `branch` /
+plugin's `$usage` token — both can render at once. Built-in `branch` /
 `git_status` (ahead/behind) tokens are native. Requires herdr ≥ 0.7.5 (the
 `tokens` metadata API); older builds need plugin v1.2.x.
 
@@ -126,9 +151,11 @@ card, `$git` in the agents panel, or both in either). Built-in `branch` /
 
 For each open workspace, the plugin reads the panes over the herdr socket, takes
 the first pane's cwd, and runs `git status --porcelain=v1 --branch` there. The
-result is reduced to the token above and pushed onto a pane as a `custom_status`
-(TTL'd metadata in sidebar mode, or a pseudo-agent in agents-panel mode). It
-computes nothing from `/proc` and spawns no shells — just one `git` per space.
+result is reduced to the token above and pushed as a TTL'd named metadata token,
+chosen by severity (`git_clean` / `git_dirty` / `git_conflict`) so herdr can
+colour it — onto the workspace in sidebar mode, or onto a pseudo-agent pane in
+agents-panel mode. It computes nothing from `/proc` and spawns no shells — just
+one `git` per space.
 
 ## Development
 
