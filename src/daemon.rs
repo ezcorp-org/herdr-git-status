@@ -236,11 +236,24 @@ pub fn push_statuses(client: &mut Herdr, spaces: &[Space], config: &Config, trac
             if let Some(pane) = sp.pseudo_panes.first().or_else(|| sp.spare_panes.first()) {
                 if status.is_empty() {
                     release_pseudo(client, pane, &source, tracked); // clean → no entry
+                    if tracked.metadata.remove(pane) {
+                        let _ = client.clear_metadata_status(pane, &source, PSEUDO_AGENT);
+                    }
                 } else if client
-                    .report_agent(pane, &source, PSEUDO_AGENT, "idle", &status)
+                    .report_agent(pane, &source, PSEUDO_AGENT, "idle")
                     .is_ok()
                 {
                     tracked.pseudo.insert(pane.clone());
+                    // 0.7.5: report_agent only claims the entry; the status text
+                    // rides a named `git` token (rendered by a `$git` row). Named
+                    // tokens are independent, so this no longer collides with the
+                    // space-usage plugin's `usage` token.
+                    if client
+                        .report_metadata_status(pane, &source, PSEUDO_AGENT, &status, ttl_ms)
+                        .is_ok()
+                    {
+                        tracked.metadata.insert(pane.clone());
+                    }
                 }
                 // A report_agent failure means the pane just closed; do nothing
                 // this cycle (the next refresh re-evaluates) rather than falling
@@ -260,10 +273,10 @@ pub fn push_statuses(client: &mut Herdr, spaces: &[Space], config: &Config, trac
                 // clean → clear a status we previously set (idempotent; skip if
                 // we never set one, so always-clean spaces cost no extra calls).
                 if tracked.metadata.remove(pane_id) {
-                    let _ = client.clear_metadata_status(pane_id, &source);
+                    let _ = client.clear_metadata_status(pane_id, &source, PSEUDO_AGENT);
                 }
             } else if client
-                .report_metadata_status(pane_id, &source, &status, ttl_ms)
+                .report_metadata_status(pane_id, &source, PSEUDO_AGENT, &status, ttl_ms)
                 .is_ok()
             {
                 tracked.metadata.insert(pane_id.clone());
@@ -279,7 +292,7 @@ pub fn clear_all(client: &mut Herdr, tracked: &Tracked) {
         let _ = client.release_agent(pane_id, &source, PSEUDO_AGENT);
     }
     for pane_id in &tracked.metadata {
-        let _ = client.clear_metadata_status(pane_id, &source);
+        let _ = client.clear_metadata_status(pane_id, &source, PSEUDO_AGENT);
     }
 }
 

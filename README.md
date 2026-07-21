@@ -94,23 +94,33 @@ clean_checkmark = true
 ```
 
 - **agents-panel** (default): each space gets a `git` pseudo-agent entry in the
-  sidebar agents panel, carrying the status token. Works on stock herdr.
-- **sidebar**: renders the status inside each spaces card, under the branch
-  name. Requires a herdr build patched to add a spaces-card status row — a
-  native plugin sidebar surface is an open upstream request (discussion #713).
-  That patch modifies herdr itself (AGPL-3.0), so it is **not** distributed
-  with this MIT plugin; agents-panel mode works on stock herdr with no patch.
+  sidebar agents panel, carrying the status token.
+- **sidebar**: renders the status inside each spaces card, under the branch name.
 
 Switching modes cleans up after the other mode automatically.
 
-Note the status is a plain string styled by herdr — it renders in herdr's own
-row colours, not per-token colours (those are only possible where herdr itself
-draws the token).
+### herdr 0.7.5+ (native sidebar tokens — no patch needed)
 
-Only one sidebar-mode daemon can own a space's status row at a time. If you also
-run the [space-usage](https://github.com/ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay)
-plugin in sidebar mode, the two will contend for that single row — run one in
-sidebar mode and the other in agents-panel mode (or disable one).
+Since herdr **0.7.5** the sidebar is drawn from configurable **token rows**, so
+sidebar mode no longer needs a patched build. This plugin pushes a named
+**`git`** metadata token (`pane.report_metadata`, replacing the old
+`custom_status`), and you reference it as **`$git`** in herdr's own
+`config.toml`:
+
+```toml
+[ui.sidebar.spaces]          # sidebar mode → git status under each space
+rows = [["state_icon", "workspace"], ["branch", "git_status", "$git"]]
+
+[ui.sidebar.agents]          # agents-panel mode → git status on the agent row
+rows = [["state_icon", "workspace", "tab"], ["agent", "$git"]]
+```
+
+Because tokens are **named**, this no longer collides with the
+[space-usage](https://github.com/ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay)
+plugin's `$usage` token — both can render at once (e.g. `$usage` in the spaces
+card, `$git` in the agents panel, or both in either). Built-in `branch` /
+`git_status` (ahead/behind) tokens are native. Requires herdr ≥ 0.7.5 (the
+`tokens` metadata API); older builds need plugin v1.2.x.
 
 ## How it works
 
