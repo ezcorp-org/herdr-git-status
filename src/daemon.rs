@@ -31,8 +31,11 @@ use crate::model::Space;
 pub struct Tracked {
     /// Panes carrying our pseudo-agent (released, not TTL'd).
     pub pseudo: HashSet<String>,
-    /// Panes carrying TTL'd metadata statuses.
+    /// Panes carrying TTL'd pane-level metadata tokens (agents-panel mode).
     pub metadata: HashSet<String>,
+    /// Workspaces carrying TTL'd workspace-level metadata tokens (sidebar mode →
+    /// the spaces card, which renders workspace tokens rather than pane tokens).
+    pub workspaces: HashSet<String>,
 }
 
 /// PID of a live updater daemon, or `None` (missing pid file / dead process).
@@ -171,6 +174,7 @@ pub fn disable_updater() -> crate::Result<()> {
                 sweep.pseudo.extend(sp.pseudo_panes.iter().cloned());
                 sweep.metadata.extend(sp.agent_panes.iter().cloned());
                 sweep.metadata.extend(sp.spare_panes.iter().cloned());
+                sweep.workspaces.insert(sp.id.clone());
             }
             clear_all(&mut client, &sweep);
         }
@@ -267,20 +271,19 @@ pub fn push_statuses(client: &mut Herdr, spaces: &[Space], config: &Config, trac
             release_pseudo(client, pane_id, &source, tracked);
         }
 
-        let target = sp.spare_panes.first().or_else(|| sp.agent_panes.first());
-        if let Some(pane_id) = target {
-            if status.is_empty() {
-                // clean → clear a status we previously set (idempotent; skip if
-                // we never set one, so always-clean spaces cost no extra calls).
-                if tracked.metadata.remove(pane_id) {
-                    let _ = client.clear_metadata_status(pane_id, &source, PSEUDO_AGENT);
-                }
-            } else if client
-                .report_metadata_status(pane_id, &source, PSEUDO_AGENT, &status, ttl_ms)
-                .is_ok()
-            {
-                tracked.metadata.insert(pane_id.clone());
+        // 0.7.5: the spaces card renders WORKSPACE tokens (`[ui.sidebar.spaces]`
+        // `$git`), not pane tokens — so report at the workspace level.
+        if status.is_empty() {
+            // clean → clear a token we previously set (idempotent; skip if we
+            // never set one, so always-clean spaces cost no extra calls).
+            if tracked.workspaces.remove(&sp.id) {
+                let _ = client.workspace_clear_metadata(&sp.id, &source, PSEUDO_AGENT);
             }
+        } else if client
+            .workspace_report_metadata(&sp.id, &source, PSEUDO_AGENT, &status, ttl_ms)
+            .is_ok()
+        {
+            tracked.workspaces.insert(sp.id.clone());
         }
     }
 }
@@ -293,6 +296,9 @@ pub fn clear_all(client: &mut Herdr, tracked: &Tracked) {
     }
     for pane_id in &tracked.metadata {
         let _ = client.clear_metadata_status(pane_id, &source, PSEUDO_AGENT);
+    }
+    for workspace_id in &tracked.workspaces {
+        let _ = client.workspace_clear_metadata(workspace_id, &source, PSEUDO_AGENT);
     }
 }
 

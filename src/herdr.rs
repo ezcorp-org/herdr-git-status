@@ -226,6 +226,50 @@ impl Herdr {
         Ok(())
     }
 
+    /// `workspace.report_metadata` — set a TTL'd named `token` on a WORKSPACE.
+    ///
+    /// The **spaces card** (`[ui.sidebar.spaces]`, `$<token>`) renders
+    /// *workspace* tokens; a pane token (see [`Self::report_metadata_status`])
+    /// only reaches the agents panel. So sidebar mode reports at the workspace
+    /// level. The TTL self-clears the value if the daemon dies.
+    pub fn workspace_report_metadata(
+        &mut self,
+        workspace_id: &str,
+        source: &str,
+        token: &str,
+        value: &str,
+        ttl_ms: u64,
+    ) -> crate::Result<()> {
+        self.call(
+            "workspace.report_metadata",
+            &json!({
+                "workspace_id": workspace_id,
+                "source": source,
+                "tokens": { token: value },
+                "ttl_ms": ttl_ms,
+            }),
+        )?;
+        Ok(())
+    }
+
+    /// `workspace.report_metadata` clearing a named workspace `token`.
+    pub fn workspace_clear_metadata(
+        &mut self,
+        workspace_id: &str,
+        source: &str,
+        token: &str,
+    ) -> crate::Result<()> {
+        self.call(
+            "workspace.report_metadata",
+            &json!({
+                "workspace_id": workspace_id,
+                "source": source,
+                "tokens": { token: Value::Null },
+            }),
+        )?;
+        Ok(())
+    }
+
     /// `notification.show` — best-effort toast.
     pub fn notification_show(&mut self, title: &str, body: &str) -> crate::Result<()> {
         self.call(
